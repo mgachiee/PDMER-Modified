@@ -170,5 +170,3 @@ This repository contains a set of targeted modifications made on top of the orig
 ## Attribution and forking
 
 This repository is a fork that modifies a prior baseline project and uses pretrained components which were originally developed by other authors. When you publish this fork or create a new repository for it, please retain clear attribution to the original project and to the creators of any pretrained models used (for example, the ImageBind authors if you use that model). Add the original project's repository link and citation in the new repo's description and LICENSE file as appropriate.
-
-If you'd like, I can add a small PR-ready `README` header that directly links to the original baseline repository — tell me the preferred repository URL and I will add it.
