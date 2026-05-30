@@ -1,6 +1,8 @@
 import logging
 import os
 import random
+import signal
+import sys
 
 import learn2learn as l2l
 import numpy as np
@@ -27,7 +29,9 @@ from utils.train import (
     get_optimizer,
     print_params_info,
     save_config,
+    save_checkpoint,
     save_model,
+    load_checkpoint,
     validate_model,
 )
 
@@ -133,8 +137,73 @@ def train():
     min_val_loss = float("inf")
     max_average_score = 0.0
     train_loss = 0.0
+    start_epoch = 0
 
-    for epoch in trange(args.num_epochs):
+    if args.resume:
+        resume_path = args.resume
+        if resume_path == "latest":
+            resume_path = os.path.join(
+                args.log_dir, args.train_name, "checkpoints", "latest.pt"
+            )
+        start_epoch, best = load_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            checkpoint_path=resume_path,
+            device=args.device,
+            strict=True,
+        )
+        min_val_loss = best.get("min_val_loss", min_val_loss)
+        max_average_score = best.get("max_average_score", max_average_score)
+        logging.info(
+            f"Resumed from {resume_path} at epoch {start_epoch}, "
+            f"min_val_loss={min_val_loss}, max_average_score={max_average_score}"
+        )
+
+    # Mutable references used by the SIGINT handler to know current state
+    epoch_ref = {"current": start_epoch}
+    best_ref = {
+        "min_val_loss": min_val_loss,
+        "max_average_score": max_average_score,
+    }
+
+    class CheckpointOnSignal:
+        def __init__(self, model, optimizer, args, epoch_ref, best_ref):
+            self.model = model
+            self.optimizer = optimizer
+            self.args = args
+            self.epoch_ref = epoch_ref
+            self.best_ref = best_ref
+
+        def handler(self, signum, frame):
+            logging.info(f"Signal {signum} received — saving checkpoint before exit.")
+            try:
+                save_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    epoch=self.epoch_ref["current"],
+                    train_name=self.args.train_name,
+                    log_dir=self.args.log_dir,
+                    best={
+                        "min_val_loss": self.best_ref.get("min_val_loss"),
+                        "max_average_score": self.best_ref.get("max_average_score"),
+                    },
+                    save_latest=True,
+                )
+                logging.info("Checkpoint saved successfully on signal.")
+            except Exception as e:
+                logging.exception(f"Failed to save checkpoint on signal: {e}")
+            finally:
+                sys.exit(0)
+
+    # Register the signal handler so Ctrl+C triggers a checkpoint save
+    signal_saver = CheckpointOnSignal(model=model, optimizer=optimizer, args=args, epoch_ref=epoch_ref, best_ref=best_ref)
+    signal.signal(signal.SIGINT, signal_saver.handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, signal_saver.handler)
+
+    for epoch in trange(start_epoch, args.num_epochs):
+        # update epoch_ref for the signal handler
+        epoch_ref["current"] = epoch
         # Train the model
         model.train()
         if maml is not None:
@@ -149,6 +218,23 @@ def train():
 
         if epoch % valid_every_epoch == 0:
             min_val_loss, max_average_score = validate(**locals())
+            # keep best_ref in sync for the signal handler
+            best_ref["min_val_loss"] = min_val_loss
+            best_ref["max_average_score"] = max_average_score
+
+        if args.save_every_epoch > 0 and epoch % args.save_every_epoch == 0:
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                train_name=args.train_name,
+                log_dir=args.log_dir,
+                best={
+                    "min_val_loss": min_val_loss,
+                    "max_average_score": max_average_score,
+                },
+                save_latest=args.save_latest,
+            )
 
 
 def validate(

@@ -44,7 +44,36 @@ class ImageBind(nn.Module):
             if audio_segmentation_list is None
             else len(audio_segmentation_list[0])
         )
+        
+        # Processing audio using GPU
+        # waveforms = music_segmentation(
+        #     audio_paths=audio_paths,
+        #     sample_rate=44100,
+        #     clip_audio=clip_audio,
+        #     audio_segmentation_list=(
+        #         [
+        #             [
+        #                 (
+        #                     clip_audio[0]
+        #                     + -1 * self.segmentation_duration / 2
+        #                     + slide_length * i,
+        #                     clip_audio[0]
+        #                     + self.segmentation_duration / 2
+        #                     + slide_length * i,
+        #                 )
+        #                 for i in range(self.feature_num_per_audio)
+        #             ]
+        #             for _ in range(len(audio_paths))
+        #         ]
+        #         if audio_segmentation_list is None
+        #         else audio_segmentation_list
+        #     ),
+        # ).to(
+        #     self.device
+        # )  # [seq_len, dim]
 
+        # MODIFIED
+        # Processing audio using CPU to avoid OOM
         waveforms = music_segmentation(
             audio_paths=audio_paths,
             sample_rate=44100,
@@ -67,9 +96,7 @@ class ImageBind(nn.Module):
                 if audio_segmentation_list is None
                 else audio_segmentation_list
             ),
-        ).to(
-            self.device
-        )  # [seq_len, dim]
+        ).to("cpu")
 
         # Batch input to fix OOM
         outputs = []
@@ -93,6 +120,11 @@ class ImageBind(nn.Module):
                 embeds = self.imagebind_model(inputs)
 
             outputs.append(embeds[ModalityType.AUDIO])
+            del embeds
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         audio_embeds = torch.cat(outputs, dim=0)
         return audio_embeds.view(-1, feature_num_per_audio, audio_embeds.shape[-1])

@@ -359,11 +359,60 @@ def save_model(model: PDMERModel, epoch: int, train_name: str, log_dir: str):
     torch.save(save_dict, os.path.join(save_dir, f"epoch_{epoch}.pt"))
 
 
+def _filtered_state_dict(model: torch.nn.Module) -> dict:
+    return {
+        name: param
+        for name, param in model.state_dict().items()
+        if not name.startswith("imagebind_model.")
+    }
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    train_name: str,
+    log_dir: str,
+    best: dict,
+    save_latest: bool = True,
+):
+    save_dir = os.path.join(log_dir, f"{train_name}/checkpoints")
+    os.makedirs(save_dir, exist_ok=True)
+
+    checkpoint = {
+        "epoch": epoch,
+        "model_state": _filtered_state_dict(model),
+        "optimizer_state": optimizer.state_dict(),
+        "best": best,
+    }
+
+    torch.save(checkpoint, os.path.join(save_dir, f"epoch_{epoch}.pt"))
+    if save_latest:
+        torch.save(checkpoint, os.path.join(save_dir, "latest.pt"))
+
+
 # Load the model
 def load_model(model: torch.nn.Module, checkpoint_path: str):
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint, strict=True)
     return model
+
+
+def load_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: str,
+    device: str,
+    strict: bool = True,
+):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"], strict=strict)
+    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    start_epoch = checkpoint.get("epoch", -1) + 1
+    best = checkpoint.get(
+        "best", {"min_val_loss": float("inf"), "max_average_score": 0.0}
+    )
+    return start_epoch, best
 
 
 def create_lr_scheduler(

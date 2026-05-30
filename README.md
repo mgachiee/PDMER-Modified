@@ -146,3 +146,29 @@ If you find this code useful in your research, please consider citing:
       url={https://arxiv.org/abs/2412.19200}, 
 }
 ```
+
+## Changes from Baseline (this fork)
+
+This repository contains a set of targeted modifications made on top of the original baseline codebase to improve memory stability when processing long audio files, make dataset preprocessing more robust, and add a resumable training workflow. For full, executable examples and usage notes see `DOCS.md`.
+
+- **Dataset preprocessing and embedding cache**
+    - `script/dataset.py`: added chunked processing for the test-set global ImageBind embedding (avoids OOM on long tracks), alignment/trimming of segment lists to label length, explicit garbage collection and `torch.cuda.empty_cache()` between chunks, and optional `--test_data_only` behavior.
+    - `script/dataset.sh`: helper wrapper for running preprocessing and producing cache outputs.
+
+- **ImageBind and PDMER embedding memory usage**
+    - `models/image_bind.py`: compute waveform segmentation on CPU, batch ImageBind forward passes, move per-chunk outputs back to CPU, and free GPU caches to reduce peak GPU memory.
+    - `models/PDMER.py`: `get_embedding` updated to mirror the memory-safe, chunked embedding strategy.
+
+- **Training resume and checkpoint workflow**
+    - `utils/args.py`: added `--resume` (path or `latest`) and `--save_latest` CLI flags.
+    - `utils/train.py`: added `save_checkpoint`, `load_checkpoint`, and a filtered model-state helper to exclude large ImageBind internals from checkpoints.
+    - `train.py`: wired resume logic into training, periodic checkpoint saving, and a SIGINT/SIGTERM handler that saves a rolling `latest.pt` checkpoint on Ctrl+C.
+
+- **Docs & notes**
+    - `DOCS.md`: contains a detailed changelog, start/stop/resume examples, and recommendations for reprocessing long tracks safely.
+
+## Attribution and forking
+
+This repository is a fork that modifies a prior baseline project and uses pretrained components which were originally developed by other authors. When you publish this fork or create a new repository for it, please retain clear attribution to the original project and to the creators of any pretrained models used (for example, the ImageBind authors if you use that model). Add the original project's repository link and citation in the new repo's description and LICENSE file as appropriate.
+
+If you'd like, I can add a small PR-ready `README` header that directly links to the original baseline repository — tell me the preferred repository URL and I will add it.

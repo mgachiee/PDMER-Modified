@@ -117,6 +117,20 @@ def parse_args(description=None, arguments: list = []):
         default=50,
         help="Save model every n epoch",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default="",
+        help=(
+            "Path to checkpoint to resume from, or 'latest' to use "
+            "<log_dir>/<train_name>/checkpoints/latest.pt"
+        ),
+    )
+    parser.add_argument(
+        "--save_latest",
+        action="store_true",
+        help="Always write a rolling latest checkpoint each epoch",
+    )
     # Model params
     parser.add_argument(
         "--model_query_embed_dim",
@@ -273,6 +287,14 @@ def parse_args(description=None, arguments: list = []):
         "--using_personalized_data_validate",
         action="store_true",
         help="Whether to use the personalized data for validate",
+    )
+
+    # MODIFIED
+    # Added argument to only process test data
+    parser.add_argument(
+        "--test_data_only",
+        action="store_true",
+        help="Whether to only process the test data, if True, it will not process the train data and only return the test data loader",
     )
 
     args = parser.parse_args()
