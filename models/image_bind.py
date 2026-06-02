@@ -6,6 +6,7 @@ from typing import Union
 
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -101,7 +102,11 @@ class ImageBind(nn.Module):
         # Batch input to fix OOM
         outputs = []
         batch_count = math.ceil(waveforms.shape[0] / 60)
-        for i in range(0, batch_count):
+        for i in tqdm(
+            range(0, batch_count),
+            desc="ImageBind inference chunks",
+            leave=False,
+        ):
             current_waveforms = waveforms[
                 i * 60 : ((i + 1) * 60) if i != batch_count - 1 else None
             ]

@@ -6,6 +6,7 @@ from typing import Dict, Union
 import learn2learn as l2l
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from utils.music.util import generate_split_duration_list, get_audio_log_mel_spec
 
@@ -84,7 +85,11 @@ def slide_inference(
 
     all_embedding_dict = defaultdict(list, [])
 
-    for i in range(0, slide_count):
+    for i in tqdm(
+        range(0, slide_count),
+        desc="Preparing inference windows",
+        leave=False,
+    ):
         for key, tensor in embedding_dict.items():
             all_embedding_dict[key].append(tensor[:, i : i + 60])
 
@@ -98,7 +103,11 @@ def slide_inference(
     a_outputs = []
     v_outputs = []
 
-    for i in range(0, all_embedding_batch_size, batch_size):
+    for i in tqdm(
+        range(0, all_embedding_batch_size, batch_size),
+        desc="Running model inference",
+        leave=False,
+    ):
         currrent_output = model_wrap(
             model,
             embedding_dict={
@@ -174,11 +183,13 @@ def get_feature_from_file(
 ) -> dict:
     if imagebind_model is None:
         # 1. Load the audio embedding model
+        tqdm.write("Loading ImageBind model for inference...")
         imagebind_model: ImageBind = ImageBind(device=device).to(device=device).eval()
 
     if not isinstance(audio_file_path, list):
         audio_file_path = [audio_file_path]
 
+    tqdm.write(f"Preparing inference features for {len(audio_file_path)} audio file(s)...")
     duration_list = [
         generate_split_duration_list(
             sample,
@@ -191,16 +202,19 @@ def get_feature_from_file(
     ]
 
     # 2. Get the audio embedding
+    tqdm.write("Extracting ImageBind audio embeddings...")
     imagebind_embedding: torch.Tensor = imagebind_model.get_embedding_wrap(
         audio_file_path,
     )
 
     # 3. Get the audio global imagebind audio embedding
+    tqdm.write("Extracting global ImageBind audio embeddings...")
     global_imagebind_embedding: torch.Tensor = imagebind_model.get_embedding(
         audio_file_path, audio_segmentation_list=[[(0, 30)]] * len(audio_file_path)
     )
 
     # Get the embdding of the ImageBind
+    tqdm.write("Building log-mel spectrogram features...")
     log_mel_spec = get_audio_log_mel_spec(
         audio_file_path,
         frame_length=60,  # milliseconds
@@ -222,6 +236,7 @@ def build_batch(
     device="cuda:2",
     labels_list: list = None,
 ):
+    tqdm.write("Building inference batch...")
     feature = get_feature_from_file(
         audio_file_path, imagebind_model=imagebind_model, device=device
     )
