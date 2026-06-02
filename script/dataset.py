@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 import torch
 from torch.utils.data import DataLoader
@@ -55,8 +56,21 @@ os.makedirs(
 duration = 30.0
 
 
-def process_batch(batch, is_train_data: bool):
+def process_batch(
+    batch,
+    is_train_data: bool,
+    split_name: str = "",
+    batch_index: int = None,
+    total_batches: int = None,
+):
     samples, labels = batch
+    if batch_index is not None and total_batches is not None:
+        percent = (batch_index + 1) / total_batches * 100
+        tqdm.write(
+            f"[{split_name}] Batch {batch_index + 1}/{total_batches} "
+            f"({percent:.1f}%) - annotating {len(samples)} sample(s)"
+        )
+
     duration_list = [
         generate_split_duration_list(
             sample,
@@ -119,32 +133,56 @@ def process_batch(batch, is_train_data: bool):
         ),
     )
 
-    global_imagebind_audio_embedding = model.get_embedding(
-        samples,
-        audio_segmentation_list=(
-            [
+    # MODIFIED
+    # Added global imagebind audio embedding, which will be used in the model as a global feature, NOTE: this will remove the first 15s
+    import gc
+
+    if is_train_data:
+        global_imagebind_audio_embedding = model.get_embedding(
+            samples,
+            audio_segmentation_list=[
                 [(15, 15 + args.model_feature_num_per_audio // 2)]
                 for _ in range(len(samples))
-            ]
-            if is_train_data
-            else [
-                generate_split_duration_list(
-                    sample,
-                    sample_rate=44100,
-                    length_each_clip=30,
-                    begin_time=15.0,
-                    end_time=None,
-                    slide_start=0,
-                )
-                for sample in samples
-            ]
-        ),
-        clip_audio=(
-            (15, 15 + args.model_feature_num_per_audio // 2)
-            if is_train_data
-            else (15, None)
-        ),
-    )
+            ],
+            clip_audio=(15, 15 + args.model_feature_num_per_audio // 2),
+        )
+    else:
+        CHUNK_SIZE = 60  # tune if needed
+        global_embeds = []
+        for idx, sample in enumerate(samples):
+            segs = generate_split_duration_list(
+                sample,
+                sample_rate=44100,
+                length_each_clip=30,
+                begin_time=15.0,
+                end_time=None,
+                slide_start=0,
+            )
+            segs = segs[: len(duration_list[idx])]  # keep alignment with labels
+            if len(segs) == 0:
+                segs = [(15, 15 + args.model_feature_num_per_audio // 2)]
+
+            parts = []
+            chunk_ranges = range(0, len(segs), CHUNK_SIZE)
+            for s in tqdm(
+                chunk_ranges,
+                total=len(range(0, len(segs), CHUNK_SIZE)),
+                desc=f"Global embedding chunks {os.path.basename(sample)}",
+                leave=False,
+            ):
+                sub = segs[s : s + CHUNK_SIZE]
+                out = model.get_embedding([sample], audio_segmentation_list=[sub], clip_audio=(15, None))
+                parts.append(out.detach().cpu())  # move chunk result to CPU immediately
+                del out
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            full = torch.cat(parts, dim=1)  # (1, total_segments, feat)
+            global_embeds.append(full)
+
+        global_imagebind_audio_embedding = torch.cat(global_embeds, dim=0)  # (batch, total_segments, feat)
+    # ---------------------------------------------------------------------
 
     # Get the log mel spectrogram of the audio
     log_mel_spectrogram = get_audio_log_mel_spec(
@@ -171,8 +209,41 @@ def process_batch(batch, is_train_data: bool):
         )
 
 
-for batch in tqdm(train_data_loader, desc="Extracting train dataset's audio embedding"):
-    process_batch(batch, is_train_data=True)
+# MODIFIED
+# Added option to only process test data, which is useful when we have already processed the train data and only want to process the test data, or when we want to use the pre-processed train data and only want to process the test data
+if not args.test_data_only:
+    for batch_index, batch in enumerate(
+        tqdm(
+            train_data_loader,
+            desc="Extracting train dataset's audio embedding",
+            unit="batch",
+        )
+    ):
+        try:
+            process_batch(
+                batch,
+                is_train_data=True,
+                split_name="train",
+                batch_index=batch_index,
+                total_batches=len(train_data_loader),
+            )
+        except Exception as e:
+            logging.exception(f"Error processing batch with samples {batch[0]}: {e}")
 
-for batch in tqdm(test_data_loader, desc="Extracting test dataset's audio embedding"):
-    process_batch(batch, is_train_data=False)
+for batch_index, batch in enumerate(
+    tqdm(
+        test_data_loader,
+        desc="Extracting test dataset's audio embedding",
+        unit="batch",
+    )
+):
+    try:
+        process_batch(
+            batch,
+            is_train_data=False,
+            split_name="test",
+            batch_index=batch_index,
+            total_batches=len(test_data_loader),
+        )
+    except Exception as e:
+        logging.exception(f"Error processing batch with samples {batch[0]}: {e}")
