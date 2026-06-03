@@ -73,10 +73,25 @@ def slide_inference(
         len(embedding_dict) > 0
     ), "All the embedding is None, please check the input embedding"
 
-    # NOTE: this only support batch_size = 1, because all the test data's length is not same
-    min_seq_len = min(tensor.shape[1] for tensor in embedding_dict.values())
+    # NOTE: this only supports batch_size = 1, because test audio lengths differ.
+    # Global ImageBind embeddings intentionally have seq_len=1 and are expanded
+    # inside the model, so they must not determine the sliding-window length.
+    sequence_tensors = {
+        key: tensor
+        for key, tensor in embedding_dict.items()
+        if key != "global_imagebind_audio_embedding" and tensor.shape[1] >= 60
+    }
+    if not sequence_tensors:
+        raise ValueError("Inference requires at least one sequence feature with length >= 60.")
+
+    min_seq_len = min(tensor.shape[1] for tensor in sequence_tensors.values())
     embedding_dict = {
-        key: tensor[:, :min_seq_len, :] for key, tensor in embedding_dict.items()
+        key: (
+            tensor[:, :min_seq_len, :]
+            if key != "global_imagebind_audio_embedding" and tensor.shape[1] >= min_seq_len
+            else tensor
+        )
+        for key, tensor in embedding_dict.items()
     }
     # Now all the sequence length is the min_seq_len
     seq_len = min_seq_len
@@ -91,7 +106,10 @@ def slide_inference(
         leave=False,
     ):
         for key, tensor in embedding_dict.items():
-            all_embedding_dict[key].append(tensor[:, i : i + 60])
+            if key == "global_imagebind_audio_embedding" and tensor.shape[1] == 1:
+                all_embedding_dict[key].append(tensor)
+            else:
+                all_embedding_dict[key].append(tensor[:, i : i + 60])
 
     for key, tensor in all_embedding_dict.items():
         all_embedding_dict[key] = torch.cat(tensor, dim=0)
@@ -248,9 +266,9 @@ def build_batch(
             labels_list, dtype=torch.float32, device=device
         )
         labels = labels_list_tenor[:, 0, :], labels_list_tenor[:, 1, :]
-        assert (
-            labels[0].shape[1] == labels[1].shape[1] == seq_len,
-            f"Seq length is not same, sample length: {seq_len}, label length: {labels[0].shape[1]}",
+        assert labels[0].shape[1] == labels[1].shape[1] == seq_len, (
+            f"Seq length is not same, sample length: {seq_len}, "
+            f"label length: {labels[0].shape[1]}"
         )
     batch = (
         feature,

@@ -40,10 +40,10 @@ class ImageBind(nn.Module):
         if isinstance(audio_paths, str):
             audio_paths = [audio_paths]
 
-        feature_num_per_audio = (
-            self.feature_num_per_audio
+        requested_segment_counts = (
+            [self.feature_num_per_audio for _ in audio_paths]
             if audio_segmentation_list is None
-            else len(audio_segmentation_list[0])
+            else [len(segments) for segments in audio_segmentation_list]
         )
         
         # Processing audio using GPU
@@ -132,7 +132,43 @@ class ImageBind(nn.Module):
                 torch.cuda.empty_cache()
 
         audio_embeds = torch.cat(outputs, dim=0)
-        return audio_embeds.view(-1, feature_num_per_audio, audio_embeds.shape[-1])
+        actual_segment_count = audio_embeds.shape[0]
+        expected_segment_count = sum(requested_segment_counts)
+
+        if actual_segment_count != expected_segment_count:
+            tqdm.write(
+                "ImageBind returned "
+                f"{actual_segment_count} embedding segment(s), but "
+                f"{expected_segment_count} segment(s) were requested. "
+                "Using the available embeddings for inference."
+            )
+
+        per_audio_embeds = []
+        offset = 0
+        for requested_count in requested_segment_counts:
+            current_count = min(requested_count, actual_segment_count - offset)
+            if current_count <= 0:
+                break
+            per_audio_embeds.append(audio_embeds[offset : offset + current_count])
+            offset += current_count
+
+        if not per_audio_embeds:
+            raise RuntimeError("ImageBind did not return any audio embeddings.")
+
+        min_segment_count = min(embeds.shape[0] for embeds in per_audio_embeds)
+        if min_segment_count <= 0:
+            raise RuntimeError("ImageBind returned empty audio embeddings.")
+
+        if len(set(embeds.shape[0] for embeds in per_audio_embeds)) > 1:
+            tqdm.write(
+                "Audio files produced different inference lengths. "
+                f"Trimming all ImageBind embeddings to {min_segment_count} segment(s)."
+            )
+
+        return torch.stack(
+            [embeds[:min_segment_count] for embeds in per_audio_embeds],
+            dim=0,
+        )
 
     def get_embedding_wrap(self, audio_paths: Union[str, list]) -> torch.Tensor:
         audio_paths = [audio_paths] if isinstance(audio_paths, str) else audio_paths
