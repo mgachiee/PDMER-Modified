@@ -179,6 +179,10 @@ def music_segmentation(
         for i in range(len(audio_segmentation_list[audio_index])):
             # 2. Segment the audio
             audio_segmentation = audio_segmentation_list[audio_index][i]
+            expected_num_samples = max(
+                1,
+                int((audio_segmentation[1] - audio_segmentation[0]) * sample_rate),
+            )
             current_waveform: torch.Tensor = None
             if audio_segmentation[0] < 0:
                 current_waveform = waveform[
@@ -212,6 +216,18 @@ def music_segmentation(
                         audio_segmentation[1] * sample_rate
                     ),
                 ]
+
+            if current_waveform.size(1) == 0:
+                logging.warning(
+                    "Empty audio segment for %s at %s. Padding silence for inference.",
+                    audio_path,
+                    audio_segmentation,
+                )
+                current_waveform = torch.zeros(
+                    (waveform.size(0), expected_num_samples),
+                    dtype=waveform.dtype,
+                    device=waveform.device,
+                )
 
             waveform_segmentaion_list.append(current_waveform.clone())
 

@@ -228,7 +228,9 @@ def get_feature_from_file(
     # 3. Get the audio global imagebind audio embedding
     tqdm.write("Extracting global ImageBind audio embeddings...")
     global_imagebind_embedding: torch.Tensor = imagebind_model.get_embedding(
-        audio_file_path, audio_segmentation_list=[[(0, 30)]] * len(audio_file_path)
+        audio_file_path,
+        audio_segmentation_list=[[(0, 30)]] * len(audio_file_path),
+        clip_audio=None,
     )
 
     # Get the embdding of the ImageBind
