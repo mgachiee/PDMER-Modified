@@ -10,6 +10,8 @@ import torch
 import torchaudio
 import torchaudio.transforms as transforms
 
+from torch.nn.utils.rnn import pad_sequence
+
 
 def read_wav_as_tensor(
     filepath: str, sample_rate: int = 44100, duration: Tuple[float, float] = None
@@ -379,7 +381,8 @@ def get_audio_log_mel_spec(
         log_mel_spec = log_mel_spec.permute(0, 2, 1)
         output.append(log_mel_spec)
 
-    output = torch.stack(output, dim=0)
+    # output = torch.stack(output, dim=0)
+    output = pad_sequence(output, batch_first=True, padding_value=0.0)
     return output
 
 
