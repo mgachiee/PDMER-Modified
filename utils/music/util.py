@@ -11,6 +11,7 @@ import torchaudio
 import torchaudio.transforms as transforms
 
 from torch.nn.utils.rnn import pad_sequence
+from torch.nn import functional as F
 
 
 def read_wav_as_tensor(
@@ -382,7 +383,40 @@ def get_audio_log_mel_spec(
         output.append(log_mel_spec)
 
     # output = torch.stack(output, dim=0)
-    output = pad_sequence(output, batch_first=True, padding_value=0.0)
+    # Standardize tensor sizes and enforce Transformer architectural limits
+    MAX_ALLOWED_LEN = 512
+    truncated_output = []
+
+    for tensor in output:
+        if tensor.size(0) > MAX_ALLOWED_LEN:
+            # Safely truncate the tensor to the maximum allowed length
+            truncated_output.append(tensor[:MAX_ALLOWED_LEN, :])
+        else:
+            truncated_output.append(tensor)
+    
+    # Find the longest sequence length in the batch after truncation to pad all tensors to the same length
+    if len(truncated_output) > 0:
+        batch_max_len = max(tensor.size(0) for tensor in truncated_output)
+    else:
+        batch_max_len = 0
+
+    # Pad all tensors to the same length (batch_max_len) with zeros, ensuring they can be stacked into a single tensor
+    final_output = []
+    for tensor in truncated_output:
+        current_len = tensor.size(0)
+        if current_len < batch_max_len:
+            pad_size = batch_max_len - current_len
+            padded_tensor = F.pad(tensor, (0, 0, 0, 0, 0, pad_size), value=0.0)
+            final_output.append(padded_tensor)
+        else:
+            final_output.append(tensor)
+    
+    # Stack the padded tensors into a single tensor of shape (batch_size, max_seq_len, num_mel_bins)
+    if len(final_output) > 0:
+        output = torch.stack(final_output, dim=0)
+    else:
+        output = torch.empty(0)
+
     return output
 
 
