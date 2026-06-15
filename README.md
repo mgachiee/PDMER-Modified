@@ -96,10 +96,11 @@ python train.py --device "cuda:0" --using_personalized_data_train --using_person
 ```
 
 ### Inference
-For inference, you can use the following code snippet after training the model:
+
+#### Quick Start (Code Snippet)
+For inference on specific files, you can use the following code snippet:
 
 ```python
-
 from utils.inference import build_batch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -129,6 +130,25 @@ output = model(embedding)
 print("Arousal: ", output["model_output"][0].shape) # The first element is the arousal prediction, [batch_size, 2 * second]
 print("Valence: ", output["model_output"][1].shape) # The second element is the valence prediction, [batch_size, 2 * second]
 ```
+
+#### Batch & Long-Track Inference (`model.py`)
+The `model.py` script provides a production-ready way to perform inference on folders of audio files. It is specifically optimized for long audio tracks and robust memory management.
+
+**Structure & Features:**
+- **Automatic Configuration**: Dynamically loads model hyperparameters from `logs/va-annotator-model/config.json`.
+- **Checkpoint Loading**: Loads the latest trained weights from `logs/va-annotator-model/models/latest.pt`.
+- **Smart Slicing**: Automatically detects if an audio track exceeds the model's native window (60 frames/30 seconds) and applies a sliding window inference (`slide_inference`) to prevent OOM and ensure continuity.
+- **Batch Processing**: Scans the `data/dataset` folder for audio files (supporting `.wav`, `.mp3`, and `.flac`).
+- **Device Support**: Defaults to CPU for compatibility, but easily configurable for GPU in the script.
+
+**Usage:**
+1. Ensure your trained model and config are in `logs/va-annotator-model/`.
+2. Place your target audio files (`.wav`, `.mp3`, or `.flac`) in `data/dataset/`.
+3. Run the script:
+   ```bash
+   python model.py
+   ```
+   The script will print the Arousal and Valence timeline shapes and values for each file.
 
 
 ## Citation
