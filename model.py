@@ -1,10 +1,12 @@
 import json
 import torch
 import torch.nn.functional as F
+import pandas as pd
 
 from pathlib import Path
 from models.PDMER import PDMERModel
 from utils.inference import build_batch, slide_inference
+from utils.music.util import generate_split_duration_list
 
 torch.set_printoptions(sci_mode=False, precision=4)
 
@@ -104,6 +106,12 @@ def train():
 
     audio_file_path_list = [str(file) for file in dataset_folder.iterdir() if file.is_file and file.suffix in [".wav", ".mp3", ".flac"]]
 
+    # Pre-calculate actual lengths to handle padding correctly during batch/sliding inference
+    actual_lengths = []
+    for path in audio_file_path_list:
+        durations = generate_split_duration_list(path, begin_time=0)
+        actual_lengths.append(len(durations))
+
     print("Build batch started")
     embedding, _ = build_batch(
         audio_file_path_list,
@@ -133,9 +141,11 @@ def train():
             
             # Process each song in the batch one by one to accommodate slide_inference
             for i in range(batch_size):
-                # Isolate exactly one song, maintaining a batch size of 1
+                # Isolate exactly one song and slice away any batch-padding to ensure clean sliding window
                 single_song_dict = {
-                    key: tensor[i : i + 1] 
+                    key: (tensor[i : i + 1, :actual_lengths[i], :] 
+                          if key != "global_imagebind_audio_embedding" 
+                          else tensor[i : i + 1])
                     for key, tensor in embedding.items() 
                     if tensor is not None
                 }
@@ -157,24 +167,43 @@ def train():
             final_valence = final_valence.unsqueeze(-1)
             
             # Reconstruct the exact dictionary structure expected by your annotation script
-            output = {
+            output_dict = {
                 "model_output": [final_arousal, final_valence],
                 "attention_maps": None  # slide_inference does not track batched attention maps
             }
             
         else:
             # If the sequence is short enough, pass it directly to the native model
-            output = model(embedding)
+            output_dict = model(embedding)
 
-    arousal = output["model_output"][0]
-    valence = output["model_output"][1]
+    arousal = output_dict["model_output"][0]
+    valence = output_dict["model_output"][1]
 
-    print("Arousal:", arousal.shape)
-    print("Valence:", valence.shape)
-    print(arousal)
-    print(valence)
+    # Save the actual values (both mean and full timeline) to a csv file for later analysis
+    results = []
+    output_path = Path("data/dataset/annotations.csv")
+    
+    # Convert tensors to lists for easier iteration and trimming
+    arousal_list = arousal.squeeze(-1).tolist()
+    valence_list = valence.squeeze(-1).tolist()
+
+    for i, file_path in enumerate(audio_file_path_list):
+        # Trim away any zero-padding added during batching to get the true timeline
+        a_vals = arousal_list[i][:actual_lengths[i]]
+        v_vals = valence_list[i][:actual_lengths[i]]
+        
+        results.append({
+            "file_path": file_path,
+            "arousal_mean": sum(a_vals) / len(a_vals) if a_vals else 0,
+            "valence_mean": sum(v_vals) / len(v_vals) if v_vals else 0,
+            "arousal_timeline": a_vals,
+            "valence_timeline": v_vals
+        })
+    
+    df = pd.DataFrame(results)
+    df.to_csv(output_path, index=False)
 
 if __name__ == "__main__":
     print("Annotation started...")
     train()
-    print("Annoation completed... ")
+    print("Annotation completed... ")
