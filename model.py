@@ -5,6 +5,7 @@ import pandas as pd
 
 from pathlib import Path
 from models.PDMER import PDMERModel
+from models.image_bind import ImageBind
 from utils.inference import build_batch, slide_inference
 from utils.music.util import generate_split_duration_list
 
@@ -104,96 +105,74 @@ def train():
     model.load_state_dict(state, strict=True)
     model.eval()
 
+    # Load ImageBind once to avoid reloading for every file
+    print("Loading ImageBind model...")
+    imagebind_model = ImageBind(device=device).to(device=device).eval()
+
     audio_file_path_list = [str(file) for file in dataset_folder.iterdir() if file.is_file and file.suffix in [".wav", ".mp3", ".flac"]]
 
-    # Pre-calculate actual lengths to handle padding correctly during batch/sliding inference
-    actual_lengths = []
+    results = []
+    output_path = Path("data/dataset/annotations.csv")
+
     for path in audio_file_path_list:
+        print(f"Processing: {path}")
+        
+        # Calculate actual length for this single file to handle padding correctly
         durations = generate_split_duration_list(path, begin_time=0)
-        actual_lengths.append(len(durations))
+        actual_length = len(durations)
+        
+        # Build batch for ONE file using the pre-loaded imagebind_model
+        embedding, _ = build_batch(
+            [path],
+            imagebind_model=imagebind_model,
+            device=device,
+        )
 
-    print("Build batch started")
-    embedding, _ = build_batch(
-        audio_file_path_list,
-        imagebind_model=None,
-        device=device,
-    )
+        with torch.no_grad():
+            # Setup Keys and Limits
+            AUDIO_KEY = "log_mel_spectrogram"
+            NATIVE_WINDOW = 60
 
-    print("Preparing Output") 
-    with torch.no_grad():
-        # 1. Setup Keys and Limits
-        AUDIO_KEY = "log_mel_spectrogram"
-        NATIVE_WINDOW = 60
+            # Extract the audio tensor safely to check dimensions
+            audio_tensor = embedding[AUDIO_KEY] if AUDIO_KEY in embedding else next(iter(embedding.values()))
+            seq_len = audio_tensor.size(1)
 
-        # Extract the audio tensor safely to check dimensions
-        if AUDIO_KEY in embedding:
-            audio_tensor = embedding[AUDIO_KEY]
-        else:
-            audio_tensor = next(iter(embedding.values()))
-
-        seq_len = audio_tensor.size(1)
-        batch_size = audio_tensor.size(0)
-
-        # 2. Choose the Inference Path
-        if seq_len > NATIVE_WINDOW:
-            batch_arousal = []
-            batch_valence = []
-            
-            # Process each song in the batch one by one to accommodate slide_inference
-            for i in range(batch_size):
-                # Isolate exactly one song and slice away any batch-padding to ensure clean sliding window
+            # Choose the Inference Path
+            if seq_len > NATIVE_WINDOW:
+                # Slice away any potential padding from build_batch to ensure clean sliding window
                 single_song_dict = {
-                    key: (tensor[i : i + 1, :actual_lengths[i], :] 
-                          if key != "global_imagebind_audio_embedding" 
-                          else tensor[i : i + 1])
+                    key: (tensor[:, :actual_length, :] if key != "global_imagebind_audio_embedding" else tensor)
                     for key, tensor in embedding.items() 
                     if tensor is not None
                 }
                 
                 # Run sliding inference on the single track
                 single_inference_result = slide_inference(model, single_song_dict)
+                arousal = single_inference_result["model_output"][0]
+                valence = single_inference_result["model_output"][1]
                 
-                # Collect both Arousal (index 0) and Valence (index 1)
-                batch_arousal.append(single_inference_result["model_output"][0])
-                batch_valence.append(single_inference_result["model_output"][1])
-                
-            # Combine individual tracks across the batch dimension -> Shape: [batch_size, seq_len]
-            final_arousal = torch.cat(batch_arousal, dim=0)
-            final_valence = torch.cat(batch_valence, dim=0)
-            
-            # FIX: Add back the trailing channel dimension to restore 3D shape -> [batch_size, seq_len, 1]
-            # This completely satisfies downstream 3D indexing requirements
-            final_arousal = final_arousal.unsqueeze(-1)
-            final_valence = final_valence.unsqueeze(-1)
-            
-            # Reconstruct the exact dictionary structure expected by your annotation script
-            output_dict = {
-                "model_output": [final_arousal, final_valence],
-                "attention_maps": None  # slide_inference does not track batched attention maps
-            }
-            
-        else:
-            # If the sequence is short enough, pass it directly to the native model
-            output_dict = model(embedding)
+            else:
+                # If the sequence is short enough, pass it directly to the native model
+                output_dict = model(embedding)
+                arousal = output_dict["model_output"][0]
+                valence = output_dict["model_output"][1]
 
-    arousal = output_dict["model_output"][0]
-    valence = output_dict["model_output"][1]
-
-    # Save the actual values (both mean and full timeline) to a csv file for later analysis
-    results = []
-    output_path = Path("data/dataset/annotations.csv")
-    
-    # Convert tensors to lists for easier iteration and trimming
-    arousal_list = arousal.squeeze(-1).tolist()
-    valence_list = valence.squeeze(-1).tolist()
-
-    for i, file_path in enumerate(audio_file_path_list):
-        # Trim away any zero-padding added during batching to get the true timeline
-        a_vals = arousal_list[i][:actual_lengths[i]]
-        v_vals = valence_list[i][:actual_lengths[i]]
+        # Extract timelines (Batch size is guaranteed to be 1 here)
+        # Squeeze to remove batch and trailing channel dimensions -> [seq_len]
+        a_vals = arousal.squeeze().tolist()
+        v_vals = valence.squeeze().tolist()
         
+        # Ensure we only keep the non-padded frames if the model returned more
+        if isinstance(a_vals, list):
+            a_vals = a_vals[:actual_length]
+            v_vals = v_vals[:actual_length]
+        else:
+            # Handle case where squeeze might result in a scalar for extremely short audio
+            a_vals = [a_vals]
+            v_vals = [v_vals]
+
         results.append({
-            "file_path": file_path,
+            "file_path": path,
             "arousal_mean": sum(a_vals) / len(a_vals) if a_vals else 0,
             "valence_mean": sum(v_vals) / len(v_vals) if v_vals else 0,
             "arousal_timeline": a_vals,
